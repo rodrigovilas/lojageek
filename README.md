@@ -2,7 +2,8 @@
 
 Projeto didático para Android Studio, inspirado na apostila **Loja Online Simples com Flutter e Dart**.
 
- - Prof. Alexandre Garcez Vieira
+ - Rodrigo Almeida Vilas Bôas
+ - 3º DS - A
  - Escola Técnica Estadual Juscelino Kubitschek de Oliveira
  - Diadema / SP
 
