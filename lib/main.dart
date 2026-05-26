@@ -9,8 +9,8 @@ void main() async {
 
   
   await Supabase.initialize(
-    url: 'https://wynervrcdrltbwtyjilm.supabase.co/rest/v1/',
-    anonKey: 'sb_publishable_X65TwySeUMx6ftGUEzdQWw_s_iy7CwN',
+    url: 'https://wynervrcdrltbwtyjilm.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind5bmVydnJjZHJsdGJ3dHlqaWxtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk4MTA5OTYsImV4cCI6MjA5NTM4Njk5Nn0.Y5xUKGREwbZdpBWDSsiUHMgx7LNBENOZR-yE2mBIjYc',
   );
 
   runApp(const GeekStoreApp());
@@ -345,13 +345,14 @@ class _LandingPageState extends State<LandingPage> {
 
   Future<void> _loadCatalog() async {
     try {
-      setState(() => _isLoading = true);
+      print('Iniciando busca no Supabase...'); // <--- ADICIONE ISTO
+      
       final List<Map<String, dynamic>> response = await Supabase.instance.client
           .from('products')
-          .select()
-          .order('name', ascending: true);
-
+          .select();
       
+      print('Dados recebidos: ${response.length} itens encontrados.'); 
+
       StoreController.instance.catalog = response
           .map((item) => Product.fromJson(item))
           .toList();
@@ -362,9 +363,9 @@ class _LandingPageState extends State<LandingPage> {
         _isLoading = false;
       });
     } catch (e) {
+      print('ERRO NO SUPABASE: $e'); 
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Erro ao conectar com o Supabase: $e';
       });
     }
   }
