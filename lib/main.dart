@@ -1,25 +1,81 @@
-
 import 'dart:convert';
 import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-void main() {
-  runApp(const LojaOnlineApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  
+  await Supabase.initialize(
+    url: 'https://wynervrcdrltbwtyjilm.supabase.co/rest/v1/',
+    anonKey: 'sb_publishable_X65TwySeUMx6ftGUEzdQWw_s_iy7CwN',
+  );
+
+  runApp(const GeekStoreApp());
 }
 
-/// Modelo de dados do produto.
-///
-/// Os produtos são carregados do arquivo externo assets/products.json.
-/// Isso deixa o exemplo mais organizado e aproxima o projeto de uma situação real,
-/// em que os dados poderiam vir de um banco de dados ou API.
+/// ============================================================================
+/// 1. CONFIGURAÇÃO PRINCIPAL DO APLICATIVO
+/// ============================================================================
+class GeekStoreApp extends StatelessWidget {
+  const GeekStoreApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Geek & Gamer Store',
+      debugShowCheckedModeBanner: false,
+      theme: _buildAppTheme(),
+      home: const LandingPage(),
+    );
+  }
+
+  /// Constrói o tema visual do aplicativo
+  /// Constrói o tema visual do aplicativo
+  ThemeData _buildAppTheme() {
+    return ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: Colors.deepPurple,
+        primary: Colors.deepPurpleAccent,
+        secondary: Colors.amber,
+        surface: Colors.grey[50]!,
+        error: Colors.redAccent,
+      ),
+      useMaterial3: true, // <--- ALTERADO AQUI
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Colors.deepPurpleAccent,
+        foregroundColor: Colors.white,
+        centerTitle: true,
+        elevation: 0,
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+        filled: true,
+        fillColor: Colors.white,
+      ),
+    );
+  }
+}
+
+/// ============================================================================
+/// 2. MODELOS DE DADOS (DATA MODELS)
+/// ============================================================================
+
+/// Modelo que representa um produto no catálogo
 class Product {
   final String id;
   final String name;
   final double price;
   final int stock;
-  final String icon;
+  final String thumbnail;
   final String shortDescription;
   final String longDescription;
 
@@ -28,488 +84,368 @@ class Product {
     required this.name,
     required this.price,
     required this.stock,
-    required this.icon,
+    required this.thumbnail,
     required this.shortDescription,
     required this.longDescription,
   });
 
   factory Product.fromJson(Map<String, dynamic> json) {
     return Product(
-      id: json['id'] as String,
-      name: json['name'] as String,
-      price: (json['price'] as num).toDouble(),
-      stock: json['stock'] as int,
-      icon: json['icon'] as String,
-      shortDescription: json['shortDescription'] as String,
-      longDescription: json['longDescription'] as String,
+      id: json['id']?.toString() ?? '',
+      name: json['name']?.toString() ?? '',
+      price: (json['price'] as num?)?.toDouble() ?? 0.0,
+      stock: (json['stock'] as num?)?.toInt() ?? 0,
+      thumbnail: json['thumbnail']?.toString() ?? '',
+      shortDescription: json['short_description']?.toString() ?? '', 
+      longDescription: json['long_description']?.toString() ?? '',
     );
   }
 }
 
-/// Controlador central do aplicativo.
-///
-/// Esta classe guarda os produtos, o carrinho e o número de confirmação.
-/// Ela usa ChangeNotifier para avisar as telas quando algum valor muda.
-class StoreController extends ChangeNotifier {
-  final Map<String, int> _cart = <String, int>{};
 
-  List<Product> products = <Product>[];
-  bool loading = true;
-  String? loadError;
-  String? confirmationNumber;
+class CartItem {
+  final Product product;
+  int quantity;
 
-  Future<void> loadProducts() async {
-    try {
-      final String jsonText = await rootBundle.loadString('assets/products.json');
-      final List<dynamic> decoded = json.decode(jsonText) as List<dynamic>;
-      products = decoded
-          .map((dynamic item) => Product.fromJson(item as Map<String, dynamic>))
-          .toList();
-      loading = false;
-      notifyListeners();
-    } catch (error) {
-      loading = false;
-      loadError = 'Não foi possível carregar o inventário: $error';
-      notifyListeners();
-    }
-  }
+  CartItem({
+    required this.product,
+    required this.quantity,
+  });
 
-  Map<String, int> get cart => Map.unmodifiable(_cart);
+  double get subtotal => product.price * quantity;
+}
 
-  int get cartItemCount => _cart.values.fold(0, (int total, int q) => total + q);
+/// Modelo para armazenar os dados de endereço do usuário
+class Address {
+  String street;
+  String cep;
 
-  Product productById(String id) => products.firstWhere((Product product) => product.id == id);
+  Address({required this.street, required this.cep});
 
-  int quantityOf(String productId) => _cart[productId] ?? 0;
+  bool get isValid => street.isNotEmpty && cep.isNotEmpty && cep.length >= 8;
+}
 
-  List<Product> get cartProducts => _cart.keys.map(productById).toList();
+/// ============================================================================
+/// 3. GERENCIAMENTO DE ESTADO E REGRAS DE NEGÓCIO (CONTROLLER)
+/// ============================================================================
+class StoreController {
+  // Padrão Singleton para acesso global facilitado no projeto didático
+  static final StoreController instance = StoreController._internal();
+  StoreController._internal();
 
-  bool addToCart(Product product) {
-    final int nextQuantity = quantityOf(product.id) + 1;
-    if (nextQuantity > product.stock) {
-      return false;
-    }
-    _cart[product.id] = nextQuantity;
-    confirmationNumber = null;
-    notifyListeners();
-    return true;
-  }
+  // Lista de produtos carregados do JSON
+  List<Product> catalog = [];
+  
+  // Lista de produtos filtrados para a tela de pesquisa
+  List<Product> filteredCatalog = [];
 
-  bool updateQuantity(Product product, int quantity) {
-    if (quantity < 0) return true;
-    if (quantity > product.stock) return false;
+  // Carrinho de compras (Mapeia o ID do produto para o CartItem)
+  Map<String, CartItem> cart = {};
 
-    if (quantity == 0) {
-      _cart.remove(product.id);
-    } else {
-      _cart[product.id] = quantity;
-    }
-    confirmationNumber = null;
-    notifyListeners();
-    return true;
-  }
+  // Configurações de taxas da loja
+  final double taxRate = 0.08; // 8% de imposto
+  final double minimumForFreeShipping = 150.00; // Desafio 2: Frete grátis >= 150
+  final double defaultShippingCost = 19.90;
 
-  void cancelOrder() {
-    _cart.clear();
-    confirmationNumber = null;
-    notifyListeners();
-  }
-
-  String finishOrder() {
-    final String number = '#${100000 + Random().nextInt(900000)}';
-    confirmationNumber = number;
-    notifyListeners();
-    return number;
-  }
-
-  double get subtotal {
+  /// Retorna o valor subtotal dos itens no carrinho
+  double get cartSubtotal {
     double total = 0;
-    _cart.forEach((String productId, int quantity) {
-      total += productById(productId).price * quantity;
-    });
+    for (var item in cart.values) {
+      total += item.subtotal;
+    }
     return total;
   }
 
-  /// Regra didática de frete.
-  /// Frete grátis acima de R$ 300,00; abaixo disso, R$ 29,90.
-  double get shipping => subtotal == 0 ? 0 : (subtotal >= 300 ? 0 : 29.90);
-
-  /// Regra didática de imposto.
-  /// Este valor é apenas uma simulação para a atividade escolar.
-  double get taxes => subtotal * 0.10;
-
-  double get total => subtotal + shipping + taxes;
-}
-
-class LojaOnlineApp extends StatefulWidget {
-  const LojaOnlineApp({super.key});
-
-  @override
-  State<LojaOnlineApp> createState() => _LojaOnlineAppState();
-}
-
-class _LojaOnlineAppState extends State<LojaOnlineApp> {
-  final StoreController controller = StoreController();
-
-  @override
-  void initState() {
-    super.initState();
-    controller.loadProducts();
+  /// Retorna o valor do frete baseado na regra de negócio
+  double get shippingCost {
+    if (cart.isEmpty) return 0.0;
+    return (cartSubtotal >= minimumForFreeShipping) ? 0.0 : defaultShippingCost;
   }
 
-  @override
-  void dispose() {
-    controller.dispose();
-    super.dispose();
+  /// Retorna o valor dos impostos calculados
+  double get taxesAmount => cartSubtotal * taxRate;
+
+  /// Retorna o valor total a ser pago (Subtotal + Frete + Impostos)
+  double get grandTotal => cartSubtotal + shippingCost + taxesAmount;
+
+  /// Adiciona um produto ao carrinho ou atualiza a quantidade
+  String addToCart(Product product, int quantityToAdd) {
+    if (cart.containsKey(product.id)) {
+      int newQty = cart[product.id]!.quantity + quantityToAdd;
+      if (newQty > product.stock) {
+        return 'Estoque insuficiente. Restam apenas ${product.stock} unidades.';
+      }
+      cart[product.id]!.quantity = newQty;
+    } else {
+      if (quantityToAdd > product.stock) {
+        return 'Estoque insuficiente para a quantidade desejada.';
+      }
+      cart[product.id] = CartItem(product: product, quantity: quantityToAdd);
+    }
+    return 'Item adicionado ao carrinho com sucesso!';
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Loja Online Simples',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
-        scaffoldBackgroundColor: const Color(0xFFF7F9FC),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: AppColors.primary,
-          foregroundColor: Colors.white,
-          centerTitle: false,
-        ),
-      ),
-      home: AnimatedBuilder(
-        animation: controller,
-        builder: (BuildContext context, Widget? child) {
-          if (controller.loading) {
-            return const LoadingPage();
-          }
-          if (controller.loadError != null) {
-            return ErrorPage(message: controller.loadError!);
-          }
-          return HomePage(controller: controller);
-        },
-      ),
-    );
+  /// Atualiza a quantidade de um item no carrinho (botões + e -)
+  void updateCartQuantity(String productId, int newQuantity) {
+    if (!cart.containsKey(productId)) return;
+    
+    if (newQuantity <= 0) {
+      cart.remove(productId);
+    } else {
+      // Valida limite de estoque
+      if (newQuantity <= cart[productId]!.product.stock) {
+        cart[productId]!.quantity = newQuantity;
+      }
+    }
+  }
+
+  /// Limpa todos os itens do carrinho
+  void clearCart() {
+    cart.clear();
+  }
+
+  /// Filtra o catálogo com base em um termo de pesquisa
+  void filterCatalog(String query) {
+    if (query.isEmpty) {
+      filteredCatalog = List.from(catalog);
+    } else {
+      filteredCatalog = catalog
+          .where((p) => p.name.toLowerCase().contains(query.toLowerCase()))
+          .toList();
+    }
   }
 }
 
-class AppColors {
-  static const Color primary = Color(0xFF075EDB);
-  static const Color primaryDark = Color(0xFF0A2E66);
-  static const Color success = Color(0xFF2EAD55);
-  static const Color warning = Color(0xFFE53935);
-}
+/// ============================================================================
+/// 4. WIDGETS PERSONALIZADOS E REUTILIZÁVEIS (COMPONENTES DA UI)
+/// ============================================================================
 
-class LoadingPage extends StatelessWidget {
-  const LoadingPage({super.key});
+/// Um campo de texto padronizado para formulários
+class CustomTextField extends StatelessWidget {
+  final TextEditingController controller;
+  final String label;
+  final IconData icon;
+  final TextInputType keyboardType;
+  final String? Function(String?)? validator;
 
-  @override
-  Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(child: CircularProgressIndicator()),
-    );
-  }
-}
-
-class ErrorPage extends StatelessWidget {
-  final String message;
-
-  const ErrorPage({required this.message, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Erro')),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(message, textAlign: TextAlign.center),
-        ),
-      ),
-    );
-  }
-}
-
-class StoreAppBar extends StatelessWidget implements PreferredSizeWidget {
-  final StoreController controller;
-  final String title;
-  final bool showBack;
-
-  const StoreAppBar({
-    required this.controller,
-    required this.title,
-    this.showBack = false,
+  const CustomTextField({
     super.key,
+    required this.controller,
+    required this.label,
+    required this.icon,
+    this.keyboardType = TextInputType.text,
+    this.validator,
   });
 
   @override
   Widget build(BuildContext context) {
-    return AppBar(
-      automaticallyImplyLeading: showBack,
-      title: Text(title),
-      actions: <Widget>[
-        AnimatedBuilder(
-          animation: controller,
-          builder: (BuildContext context, Widget? child) {
-            return Padding(
-              padding: const EdgeInsets.only(right: 12),
-              child: Badge(
-                label: Text('${controller.cartItemCount}'),
-                isLabelVisible: controller.cartItemCount > 0,
-                child: IconButton(
-                  tooltip: 'Carrinho de Compras',
-                  icon: const Icon(Icons.shopping_cart),
-                  onPressed: () => openCart(context, controller),
-                ),
-              ),
-            );
-          },
-        ),
-      ],
-    );
-  }
-
-  @override
-  Size get preferredSize => const Size.fromHeight(kToolbarHeight);
-}
-
-void openCart(BuildContext context, StoreController controller) {
-  Navigator.push(
-    context,
-    MaterialPageRoute<void>(builder: (_) => CartPage(controller: controller)),
-  );
-}
-
-void openProducts(BuildContext context, StoreController controller, {bool replace = false}) {
-  final MaterialPageRoute<void> route = MaterialPageRoute<void>(
-    builder: (_) => ProductsPage(controller: controller),
-  );
-  if (replace) {
-    Navigator.pushReplacement(context, route);
-  } else {
-    Navigator.push(context, route);
-  }
-}
-
-void showAppMessage(BuildContext context, String message, {bool success = false}) {
-  ScaffoldMessenger.of(context).hideCurrentSnackBar();
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      behavior: SnackBarBehavior.floating,
-      backgroundColor: success ? AppColors.success : null,
-      content: Text(message),
-    ),
-  );
-}
-
-/// Passo 1 – Página Inicial.
-class HomePage extends StatelessWidget {
-  final StoreController controller;
-
-  const HomePage({required this.controller, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: StoreAppBar(controller: controller, title: 'Loja Online Simples'),
-      body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(20),
-          children: <Widget>[
-            const ProductHero(),
-            const SizedBox(height: 20),
-            Text(
-              'Bem-vindo à Loja Online Simples!',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.primaryDark,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Aqui você encontra produtos de qualidade com preços justos e entrega rápida.',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 16),
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              style: FilledButton.styleFrom(
-                minimumSize: const Size.fromHeight(54),
-                backgroundColor: AppColors.primary,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: const Icon(Icons.shopping_bag_outlined),
-              label: const Text('Ver Produtos', style: TextStyle(fontSize: 18)),
-              onPressed: () => openProducts(context, controller),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                minimumSize: const Size.fromHeight(54),
-                side: const BorderSide(color: AppColors.primary, width: 1.4),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              icon: const Icon(Icons.shopping_cart_outlined),
-              label: const Text('Carrinho', style: TextStyle(fontSize: 18)),
-              onPressed: () => openCart(context, controller),
-            ),
-            const SizedBox(height: 20),
-            const DidacticNote(
-              title: 'O que esta tela ensina?',
-              text: 'A Página Inicial apresenta o app, mostra o objetivo da loja e oferece acesso rápido aos produtos e ao carrinho.',
-            ),
-          ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16.0),
+      child: TextFormField(
+        controller: controller,
+        keyboardType: keyboardType,
+        validator: validator,
+        decoration: InputDecoration(
+          labelText: label,
+          prefixIcon: Icon(icon, color: Theme.of(context).colorScheme.primary),
         ),
       ),
     );
   }
 }
 
-class ProductHero extends StatelessWidget {
-  const ProductHero({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 190,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(22),
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: <Color>[Color(0xFFEAF4FF), Color(0xFFFFFFFF)],
-        ),
-        boxShadow: const <BoxShadow>[
-          BoxShadow(color: Color(0x1A000000), blurRadius: 14, offset: Offset(0, 6)),
-        ],
-      ),
-      child: const Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: <Widget>[
-          HeroIcon(icon: Icons.headphones, size: 64),
-          HeroIcon(icon: Icons.watch, size: 54),
-          HeroIcon(icon: Icons.speaker, size: 58),
-        ],
-      ),
-    );
-  }
-}
-
-class HeroIcon extends StatelessWidget {
+/// Um botão principal com ícone
+class PrimaryButton extends StatelessWidget {
+  final String label;
   final IconData icon;
-  final double size;
+  final VoidCallback onPressed;
 
-  const HeroIcon({required this.icon, required this.size, super.key});
+  const PrimaryButton({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 90,
-      height: 90,
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: const <BoxShadow>[
-          BoxShadow(color: Color(0x18000000), blurRadius: 10, offset: Offset(0, 4)),
-        ],
+    return FilledButton.icon(
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(double.infinity, 50),
+        padding: const EdgeInsets.all(16),
       ),
-      child: Icon(icon, size: size, color: AppColors.primaryDark),
+      icon: Icon(icon),
+      label: Text(label, style: const TextStyle(fontSize: 16)),
+      onPressed: onPressed,
     );
   }
 }
 
-/// Passo 2 – Página de Produtos.
-class ProductsPage extends StatelessWidget {
-  final StoreController controller;
+/// Widget que exibe a imagem do produto de forma segura
+class ProductNetworkImage extends StatelessWidget {
+  final String url;
+  final double height;
+  final double width;
 
-  const ProductsPage({required this.controller, super.key});
+  const ProductNetworkImage({
+    super.key,
+    required this.url,
+    required this.height,
+    required this.width,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: StoreAppBar(controller: controller, title: 'Loja Online Simples', showBack: true),
-      body: AnimatedBuilder(
-        animation: controller,
-        builder: (BuildContext context, Widget? child) {
-          return ListView(
-            padding: const EdgeInsets.all(12),
-            children: <Widget>[
-              const PageHeader(
-                title: 'Página de Produtos',
-                subtitle: 'Escolha um produto e toque em Selecionar para ver os detalhes.',
-              ),
-              for (final Product product in controller.products)
-                ProductCard(
-                  product: product,
-                  onSelect: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute<void>(
-                        builder: (_) => ProductDetailsPage(controller: controller, product: product),
-                      ),
-                    );
-                  },
-                ),
-            ],
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(8.0),
+      child: Image.network(
+        url,
+        height: height,
+        width: width,
+        fit: BoxFit.cover,
+        loadingBuilder: (context, child, loadingProgress) {
+          if (loadingProgress == null) return child;
+          return SizedBox(
+            height: height, width: width,
+            child: const Center(child: CircularProgressIndicator()),
           );
         },
+        errorBuilder: (context, error, stackTrace) => Container(
+          height: height, width: width,
+          color: Colors.grey[200],
+          child: const Icon(Icons.broken_image, size: 40, color: Colors.grey),
+        ),
       ),
     );
   }
 }
 
-class ProductCard extends StatelessWidget {
-  final Product product;
-  final VoidCallback onSelect;
+/// ============================================================================
+/// 5. TELAS DO APLICATIVO (PAGES)
+/// ============================================================================
 
-  const ProductCard({required this.product, required this.onSelect, super.key});
+/// PASSO 1: PÁGINA INICIAL (LANDING PAGE)
+class LandingPage extends StatefulWidget {
+  const LandingPage({super.key});
+
+  @override
+  State<LandingPage> createState() => _LandingPageState();
+}
+
+class _LandingPageState extends State<LandingPage> {
+  bool _isLoading = true;
+  String _errorMessage = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCatalog();
+  }
+
+
+  Future<void> _loadCatalog() async {
+    try {
+      setState(() => _isLoading = true);
+      final List<Map<String, dynamic>> response = await Supabase.instance.client
+          .from('products')
+          .select()
+          .order('name', ascending: true);
+
+      
+      StoreController.instance.catalog = response
+          .map((item) => Product.fromJson(item))
+          .toList();
+      
+      StoreController.instance.filterCatalog('');
+      
+      setState(() {
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Erro ao conectar com o Supabase: $e';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 1.5,
-      color: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          children: <Widget>[
-            ProductIcon(product: product, size: 76),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                  const SizedBox(height: 4),
-                  Text(product.shortDescription, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  const SizedBox(height: 6),
-                  Text('Estoque: ${product.stock}', style: const TextStyle(fontSize: 12)),
-                ],
-              ),
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Geek & Gamer Store 🎮'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.shopping_cart),
+            tooltip: 'Ver Inventário',
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CartPage())),
+          )
+        ],
+      ),
+      body: _buildBody(theme),
+    );
+  }
+
+  Widget _buildBody(ThemeData theme) {
+    if (_isLoading) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Carregando itens do servidor...'),
+          ],
+        ),
+      );
+    }
+
+    if (_errorMessage.isNotEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Text(_errorMessage, textAlign: TextAlign.center, style: const TextStyle(color: Colors.red)),
+        ),
+      );
+    }
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Icon(Icons.sports_esports, size: 100, color: theme.colorScheme.primary),
+            const SizedBox(height: 24),
+            Text(
+              'Player 1, Ready?',
+              style: theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
             ),
-            const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: <Widget>[
-                Text(
-                  formatMoney(product.price),
-                  style: const TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FilledButton(
-                  style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-                  onPressed: onSelect,
-                  child: const Text('Selecionar'),
-                ),
-              ],
+            const SizedBox(height: 16),
+            const Text(
+              'Equipe seu setup com os melhores periféricos, actions figures e itens da cultura pop.\nFaça o upgrade do seu inventário!',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 16, height: 1.5),
+            ),
+            const SizedBox(height: 48),
+            PrimaryButton(
+              label: 'Explorar Catálogo de Loot',
+              icon: Icons.rocket_launch,
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProductsPage())),
+            ),
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                minimumSize: const Size(double.infinity, 50),
+                padding: const EdgeInsets.all(16),
+              ),
+              icon: const Icon(Icons.shopping_bag),
+              label: const Text('Acessar Meu Inventário', style: TextStyle(fontSize: 16)),
+              onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CartPage())),
             ),
           ],
         ),
@@ -518,55 +454,150 @@ class ProductCard extends StatelessWidget {
   }
 }
 
-/// Passo 3 – Detalhes do Produto.
-class ProductDetailsPage extends StatelessWidget {
-  final StoreController controller;
-  final Product product;
+/// PASSO 2: PÁGINA DE PRODUTOS (COM BUSCA)
+class ProductsPage extends StatefulWidget {
+  const ProductsPage({super.key});
 
-  const ProductDetailsPage({required this.controller, required this.product, super.key});
+  @override
+  State<ProductsPage> createState() => _ProductsPageState();
+}
+
+class _ProductsPageState extends State<ProductsPage> {
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Restaura a lista completa toda vez que abre a página
+    StoreController.instance.filterCatalog('');
+  }
+
+  void _onSearchChanged(String query) {
+    setState(() {
+      StoreController.instance.filterCatalog(query);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final products = StoreController.instance.filteredCatalog;
+
     return Scaffold(
-      appBar: StoreAppBar(controller: controller, title: 'Loja Online Simples', showBack: true),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: <Widget>[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              ProductIcon(product: product, size: 132),
+      appBar: AppBar(
+        title: const Text('Loot Disponível'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.shopping_cart),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CartPage())),
+          )
+        ],
+      ),
+      body: Column(
+        children: [
+          // Barra de pesquisa
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
+            child: TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              decoration: InputDecoration(
+                hintText: 'Buscar equipamentos...',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _searchController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () {
+                          _searchController.clear();
+                          _onSearchChanged('');
+                        },
+                      )
+                    : null,
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+          ),
+          
+          // Lista de Produtos
+          Expanded(
+            child: products.isEmpty
+                ? const Center(child: Text('Nenhum item encontrado na sua busca.'))
+                : ListView.builder(
+                    padding: const EdgeInsets.all(8.0),
+                    itemCount: products.length,
+                    itemBuilder: (context, index) {
+                      return _buildProductCard(context, products[index]);
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProductCard(BuildContext context, Product product) {
+    return Card(
+      elevation: 3,
+      margin: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
+      child: InkWell(
+        onTap: () {
+          Navigator.push(context, MaterialPageRoute(builder: (_) => ProductDetailsPage(product: product)));
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(12.0),
+          child: Row(
+            children: [
+              ProductNetworkImage(url: product.thumbnail, width: 100, height: 100),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
+                  children: [
                     Text(
                       product.name,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            color: AppColors.primaryDark,
-                          ),
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    const SizedBox(height: 6),
-                    Text('ID: ${product.id}'),
-                    const SizedBox(height: 8),
-                    Text(product.shortDescription),
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 4),
                     Text(
-                      formatMoney(product.price),
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontSize: 26,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      product.shortDescription,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 13),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 8),
                     Row(
-                      children: <Widget>[
-                        const Icon(Icons.check_circle, color: AppColors.success),
-                        const SizedBox(width: 6),
-                        Text('Em estoque: ${product.stock} unidades'),
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'R\$ ${product.price.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.primary,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: product.stock > 0 ? Colors.green[100] : Colors.red[100],
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            product.stock > 0 ? 'Estoque: ${product.stock}' : 'Esgotado',
+                            style: TextStyle(
+                              color: product.stock > 0 ? Colors.green[800] : Colors.red[800],
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
                       ],
                     ),
                   ],
@@ -574,688 +605,599 @@ class ProductDetailsPage extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 20),
-          const Divider(),
-          const SizedBox(height: 10),
-          Text('Descrição', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          Text(product.longDescription, style: const TextStyle(height: 1.45)),
-          const SizedBox(height: 24),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              minimumSize: const Size.fromHeight(52),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            icon: const Icon(Icons.add_shopping_cart),
-            label: const Text('Adicionar ao Carrinho', style: TextStyle(fontSize: 16)),
-            onPressed: () {
-              final bool added = controller.addToCart(product);
-              if (added) {
-                showAppMessage(context, 'Produto adicionado ao carrinho com sucesso!', success: true);
-              } else {
-                showAppMessage(context, 'Quantidade solicitada excede o estoque disponível.');
-              }
-            },
-          ),
-          const SizedBox(height: 10),
-          OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(52),
-              side: const BorderSide(color: AppColors.primary),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            icon: const Icon(Icons.arrow_back),
-            label: const Text('Ver Mais Produtos', style: TextStyle(fontSize: 16)),
-            onPressed: () => Navigator.pop(context),
-          ),
-          const SizedBox(height: 20),
-          const DidacticNote(
-            title: 'Regra de negócio',
-            text: 'O botão Adicionar ao Carrinho só deve funcionar enquanto a quantidade escolhida não ultrapassar o estoque do produto.',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Passo 4 – Carrinho de Compras.
-class CartPage extends StatelessWidget {
-  final StoreController controller;
-
-  const CartPage({required this.controller, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: StoreAppBar(controller: controller, title: 'Loja Online Simples', showBack: true),
-      body: AnimatedBuilder(
-        animation: controller,
-        builder: (BuildContext context, Widget? child) {
-          return ListView(
-            padding: const EdgeInsets.all(14),
-            children: <Widget>[
-              PageHeader(
-                title: 'Carrinho de Compras (${controller.cartItemCount} itens)',
-                subtitle: 'Revise os produtos, ajuste as quantidades e acompanhe o total.',
-              ),
-              if (controller.cartProducts.isEmpty)
-                const EmptyCartCard()
-              else ...<Widget>[
-                for (final Product product in controller.cartProducts)
-                  CartItemCard(controller: controller, product: product),
-                const SizedBox(height: 8),
-                SummaryCard(controller: controller),
-              ],
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  minimumSize: const Size.fromHeight(52),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: const Icon(Icons.lock_outline),
-                label: const Text('Finalizar Pedido'),
-                onPressed: controller.cartProducts.isEmpty
-                    ? null
-                    : () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute<void>(builder: (_) => CheckoutPage(controller: controller)),
-                        );
-                      },
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(50),
-                  foregroundColor: AppColors.warning,
-                  side: const BorderSide(color: AppColors.warning),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: const Icon(Icons.delete_outline),
-                label: const Text('Cancelar Pedido'),
-                onPressed: () {
-                  controller.cancelOrder();
-                  showAppMessage(context, 'Pedido cancelado. As quantidades e o total foram zerados.');
-                },
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  minimumSize: const Size.fromHeight(50),
-                  side: const BorderSide(color: AppColors.primary),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                icon: const Icon(Icons.shopping_cart_checkout),
-                label: const Text('Ver Mais Produtos'),
-                onPressed: () => openProducts(context, controller, replace: true),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class EmptyCartCard extends StatelessWidget {
-  const EmptyCartCard({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(22),
-        child: Column(
-          children: <Widget>[
-            Icon(Icons.shopping_cart_outlined, size: 60, color: Colors.grey.shade500),
-            const SizedBox(height: 10),
-            const Text('Carrinho vazio', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-            const SizedBox(height: 4),
-            const Text('Clique em Ver Mais Produtos para adicionar itens ao carrinho.'),
-          ],
         ),
       ),
     );
   }
 }
 
-class CartItemCard extends StatelessWidget {
-  final StoreController controller;
+/// PASSO 3: DETALHES DO PRODUTO
+class ProductDetailsPage extends StatelessWidget {
   final Product product;
+  const ProductDetailsPage({super.key, required this.product});
 
-  const CartItemCard({required this.controller, required this.product, super.key});
+  void _handleAddToCart(BuildContext context) {
+    if (product.stock <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Item fora de estoque no momento!'), backgroundColor: Colors.red),
+      );
+      return;
+    }
+
+    final message = StoreController.instance.addToCart(product, 1);
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: message.contains('sucesso') ? Colors.green : Colors.orange,
+        action: SnackBarAction(
+          label: 'VER CARRINHO',
+          textColor: Colors.white,
+          onPressed: () {
+            Navigator.push(context, MaterialPageRoute(builder: (_) => const CartPage()));
+          },
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    final int quantity = controller.quantityOf(product.id);
-    final double itemSubtotal = product.price * quantity;
+    final theme = Theme.of(context);
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 10),
-      color: Colors.white,
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Row(
-          children: <Widget>[
-            ProductIcon(product: product, size: 64),
-            const SizedBox(width: 10),
-            Expanded(
+    return Scaffold(
+      appBar: AppBar(title: const Text('Inspecionar Item')),
+      body: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Imagem de Destaque
+            SizedBox(
+              width: double.infinity,
+              height: 300,
+              child: ProductNetworkImage(url: product.thumbnail, width: double.infinity, height: 300),
+            ),
+            
+            // Corpo de Informações
+            Padding(
+              padding: const EdgeInsets.all(24.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text('ID: ${product.id}', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                  Text(product.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-                  Text(formatMoney(product.price)),
-                  const SizedBox(height: 6),
-                  QuantityControl(
-                    quantity: quantity,
-                    onDecrease: () => controller.updateQuantity(product, quantity - 1),
-                    onIncrease: () {
-                      final bool ok = controller.updateQuantity(product, quantity + 1);
-                      if (!ok) {
-                        showAppMessage(context, 'Quantidade solicitada excede o estoque. Estoque disponível: ${product.stock} unidades.');
-                      }
-                    },
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('Cod: ${product.id}', style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                      Icon(Icons.share, color: Colors.grey[500]),
+                    ],
                   ),
+                  const SizedBox(height: 8),
+                  Text(
+                    product.name,
+                    style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Preço e Estoque
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.grey[300]!),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Preço unitário', style: TextStyle(color: Colors.grey)),
+                            Text(
+                              'R\$ ${product.price.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                color: theme.colorScheme.primary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            const Text('Disponibilidade', style: TextStyle(color: Colors.grey)),
+                            Text(
+                              '${product.stock} em estoque',
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  
+                  const SizedBox(height: 24),
+                  const Text('Especificações do Item', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Text(
+                    product.longDescription,
+                    style: const TextStyle(fontSize: 16, height: 1.5),
+                    textAlign: TextAlign.justify,
+                  ),
+                  
+                  const SizedBox(height: 40),
                 ],
               ),
             ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: <Widget>[
-                const Text('Subtotal', style: TextStyle(fontSize: 12)),
-                Text(formatMoney(itemSubtotal), style: const TextStyle(fontWeight: FontWeight.bold)),
-              ],
-            ),
           ],
+        ),
+      ),
+      // Bottom Navigation Bar travado no rodapé para o botão de compra
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: PrimaryButton(
+            label: 'Adicionar ao Inventário',
+            icon: Icons.add_shopping_cart,
+            onPressed: () => _handleAddToCart(context),
+          ),
         ),
       ),
     );
   }
 }
 
-class QuantityControl extends StatelessWidget {
-  final int quantity;
-  final VoidCallback onDecrease;
-  final VoidCallback onIncrease;
-
-  const QuantityControl({
-    required this.quantity,
-    required this.onDecrease,
-    required this.onIncrease,
-    super.key,
-  });
+/// PASSO 4 E DESAFIOS 2 e 3: CARRINHO E FORMULÁRIO DE CHECKOUT
+class CartPage extends StatefulWidget {
+  const CartPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        border: Border.all(color: const Color(0xFFB9C8E6)),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          InkWell(
-            onTap: onDecrease,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              child: Icon(Icons.remove, size: 18, color: AppColors.primary),
-            ),
-          ),
-          Container(
-            width: 36,
-            alignment: Alignment.center,
-            decoration: const BoxDecoration(
-              border: Border.symmetric(vertical: BorderSide(color: Color(0xFFB9C8E6))),
-            ),
-            child: Text('$quantity', style: const TextStyle(fontWeight: FontWeight.bold)),
-          ),
-          InkWell(
-            onTap: onIncrease,
-            child: const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              child: Icon(Icons.add, size: 18, color: AppColors.primary),
-            ),
-          ),
-        ],
-      ),
-    );
+  State<CartPage> createState() => _CartPageState();
+}
+
+class _CartPageState extends State<CartPage> {
+  final _formKey = GlobalKey<FormState>();
+
+  // Controladores do endereço de faturamento
+  final _billingStreetCtrl = TextEditingController();
+  final _billingCepCtrl = TextEditingController();
+
+  // Controladores do endereço de entrega (Desafio 3 - Campos separados)
+  final _shippingStreetCtrl = TextEditingController();
+  final _shippingCepCtrl = TextEditingController();
+
+  // Estado para controlar se o endereço de entrega é igual ao de faturamento
+  bool _sameAddress = false;
+
+  void _refreshCart() {
+    setState(() {}); // Força reconstrução da tela quando quantidades mudam
   }
-}
-
-class SummaryCard extends StatelessWidget {
-  final StoreController controller;
-
-  const SummaryCard({required this.controller, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Text('Resumo da compra', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            SummaryRow(label: 'Subtotal', value: formatMoney(controller.subtotal)),
-            SummaryRow(label: 'Frete', value: formatMoney(controller.shipping)),
-            SummaryRow(label: 'Impostos (10%)', value: formatMoney(controller.taxes)),
-            const Divider(),
-            SummaryRow(label: 'Total', value: formatMoney(controller.total), highlight: true),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class SummaryRow extends StatelessWidget {
-  final String label;
-  final String value;
-  final bool highlight;
-
-  const SummaryRow({required this.label, required this.value, this.highlight = false, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final TextStyle style = TextStyle(
-      fontWeight: highlight ? FontWeight.bold : FontWeight.normal,
-      fontSize: highlight ? 18 : 15,
-      color: highlight ? AppColors.primary : null,
-    );
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: <Widget>[
-          Text(label, style: style.copyWith(color: Colors.black87)),
-          Text(value, style: style),
-        ],
-      ),
-    );
-  }
-}
-
-/// Passo 5 – Finalização do Pedido.
-class CheckoutPage extends StatefulWidget {
-  final StoreController controller;
-
-  const CheckoutPage({required this.controller, super.key});
-
-  @override
-  State<CheckoutPage> createState() => _CheckoutPageState();
-}
-
-class _CheckoutPageState extends State<CheckoutPage> {
-  final GlobalKey<FormState> formKey = GlobalKey<FormState>();
-  final TextEditingController billingName = TextEditingController(text: 'João da Silva');
-  final TextEditingController billingStreet = TextEditingController(text: 'Rua das Flores, 123');
-  final TextEditingController billingCity = TextEditingController(text: 'São Paulo');
-  final TextEditingController billingState = TextEditingController(text: 'SP');
-  final TextEditingController billingZip = TextEditingController(text: '01234-567');
-  final TextEditingController billingPhone = TextEditingController(text: '(11) 99999-9999');
-
-  final TextEditingController shippingName = TextEditingController(text: 'João da Silva');
-  final TextEditingController shippingStreet = TextEditingController(text: 'Rua das Flores, 123');
-  final TextEditingController shippingCity = TextEditingController(text: 'São Paulo');
-  final TextEditingController shippingState = TextEditingController(text: 'SP');
-  final TextEditingController shippingZip = TextEditingController(text: '01234-567');
-
-  bool useSameAddress = true;
 
   @override
   void dispose() {
-    billingName.dispose();
-    billingStreet.dispose();
-    billingCity.dispose();
-    billingState.dispose();
-    billingZip.dispose();
-    billingPhone.dispose();
-    shippingName.dispose();
-    shippingStreet.dispose();
-    shippingCity.dispose();
-    shippingState.dispose();
-    shippingZip.dispose();
+    _billingStreetCtrl.dispose();
+    _billingCepCtrl.dispose();
+    _shippingStreetCtrl.dispose();
+    _shippingCepCtrl.dispose();
     super.dispose();
   }
 
-  void copyBillingToShipping() {
-    shippingName.text = billingName.text;
-    shippingStreet.text = billingStreet.text;
-    shippingCity.text = billingCity.text;
-    shippingState.text = billingState.text;
-    shippingZip.text = billingZip.text;
-  }
+  void _processCheckout() {
+    if (StoreController.instance.cart.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Seu inventário está vazio!')),
+      );
+      return;
+    }
 
-  void confirmOrder() {
-    if (widget.controller.cartProducts.isEmpty) {
-      showAppMessage(context, 'O carrinho está vazio. Adicione produtos antes de finalizar.');
-      return;
+    if (_formKey.currentState!.validate()) {
+      // Geração de ID de Pedido Didático
+      final orderId = 'GEEK-${DateTime.now().year}${DateTime.now().month}-${Random().nextInt(99999).toString().padLeft(5, '0')}';
+      
+      final totalValue = StoreController.instance.grandTotal;
+
+      // Navegação para Tela de Confirmação (Desafio 4)
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (_) => OrderConfirmationPage(
+            orderId: orderId,
+            billingStreet: _billingStreetCtrl.text,
+            billingCep: _billingCepCtrl.text,
+            shippingStreet: _sameAddress ? _billingStreetCtrl.text : _shippingStreetCtrl.text,
+            shippingCep: _sameAddress ? _billingCepCtrl.text : _shippingCepCtrl.text,
+            totalValue: totalValue,
+          ),
+        ),
+      );
+
+      // Limpa o estado global após finalizar a compra
+      StoreController.instance.clearCart();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Corrija os erros no formulário de endereço.'), backgroundColor: Colors.red),
+      );
     }
-    if (!(formKey.currentState?.validate() ?? false)) {
-      showAppMessage(context, 'Preencha corretamente os endereços de cobrança e entrega.');
-      return;
-    }
-    if (useSameAddress) copyBillingToShipping();
-    final String number = widget.controller.finishOrder();
-    showAppMessage(context, 'Pedido confirmado: $number', success: true);
   }
 
   @override
   Widget build(BuildContext context) {
+    final cartItems = StoreController.instance.cart.values.toList();
+
     return Scaffold(
-      appBar: StoreAppBar(controller: widget.controller, title: 'Loja Online Simples', showBack: true),
-      body: AnimatedBuilder(
-        animation: widget.controller,
-        builder: (BuildContext context, Widget? child) {
-          return Form(
-            key: formKey,
-            child: ListView(
-              padding: const EdgeInsets.all(14),
-              children: <Widget>[
-                const PageHeader(
-                  title: 'Finalização do Pedido',
-                  subtitle: 'Informe os endereços, revise o resumo e confirme a compra simulada.',
-                ),
-                AddressSection(
-                  title: 'Endereço de cobrança',
-                  icon: Icons.location_on,
-                  controllers: <TextEditingController>[billingName, billingStreet, billingCity, billingState, billingZip, billingPhone],
-                  labels: const <String>['Nome', 'Rua e número', 'Cidade', 'UF', 'CEP', 'Telefone'],
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  color: Colors.white,
-                  child: CheckboxListTile(
-                    value: useSameAddress,
-                    onChanged: (bool? value) {
-                      setState(() {
-                        useSameAddress = value ?? false;
-                        if (useSameAddress) copyBillingToShipping();
-                      });
-                    },
-                    controlAffinity: ListTileControlAffinity.leading,
-                    title: const Text('Usar o mesmo endereço de cobrança'),
-                  ),
-                ),
-                if (!useSameAddress) ...<Widget>[
-                  const SizedBox(height: 12),
-                  AddressSection(
-                    title: 'Endereço de entrega',
-                    icon: Icons.local_shipping,
-                    controllers: <TextEditingController>[shippingName, shippingStreet, shippingCity, shippingState, shippingZip],
-                    labels: const <String>['Nome', 'Rua e número', 'Cidade', 'UF', 'CEP'],
+      appBar: AppBar(
+        title: const Text('Meu Inventário (Carrinho)'),
+        actions: [
+          if (cartItems.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.delete_sweep),
+              tooltip: 'Descartar tudo',
+              onPressed: () {
+                StoreController.instance.clearCart();
+                _refreshCart();
+              },
+            )
+        ],
+      ),
+      body: cartItems.isEmpty
+          ? _buildEmptyCart()
+          : Form(
+              key: _formKey,
+              child: ListView(
+                padding: const EdgeInsets.all(16.0),
+                children: [
+                  _buildCartList(cartItems),
+                  const SizedBox(height: 24),
+                  _buildAddressForms(),
+                  const SizedBox(height: 24),
+                  _buildOrderSummary(),
+                  const SizedBox(height: 32),
+                  PrimaryButton(
+                    label: 'Confirmar Missão (Checkout)',
+                    icon: Icons.check_circle_outline,
+                    onPressed: _processCheckout,
                   ),
                 ],
-                const SizedBox(height: 12),
-                CheckoutOrderSummary(controller: widget.controller),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    minimumSize: const Size.fromHeight(52),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+    );
+  }
+
+  Widget _buildEmptyCart() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.remove_shopping_cart, size: 80, color: Colors.grey[400]),
+          const SizedBox(height: 16),
+          const Text('Seu inventário de loot está vazio.', style: TextStyle(fontSize: 18)),
+          const SizedBox(height: 24),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Voltar para a Loja'),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCartList(List<CartItem> items) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Itens Selecionados', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        ...items.map((item) {
+          return Card(
+            margin: const EdgeInsets.only(bottom: 8.0),
+            child: Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  ProductNetworkImage(url: item.product.thumbnail, width: 60, height: 60),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(item.product.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                        Text('R\$ ${item.product.price.toStringAsFixed(2)} unid.', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                      ],
+                    ),
                   ),
-                  icon: const Icon(Icons.lock_outline),
-                  label: const Text('Confirmar Pedido'),
-                  onPressed: confirmOrder,
-                ),
-                if (widget.controller.confirmationNumber != null) ...<Widget>[
-                  const SizedBox(height: 12),
-                  ConfirmationCard(number: widget.controller.confirmationNumber!),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.remove_circle_outline, color: Colors.red),
+                        onPressed: () {
+                          StoreController.instance.updateCartQuantity(item.product.id, item.quantity - 1);
+                          _refreshCart();
+                        },
+                      ),
+                      Text('${item.quantity}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      IconButton(
+                        icon: const Icon(Icons.add_circle_outline, color: Colors.green),
+                        onPressed: () {
+                          if (item.quantity < item.product.stock) {
+                            StoreController.instance.updateCartQuantity(item.product.id, item.quantity + 1);
+                            _refreshCart();
+                          } else {
+                            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Limite de estoque atingido.')));
+                          }
+                        },
+                      ),
+                    ],
+                  ),
                 ],
-              ],
+              ),
             ),
           );
-        },
+        }).toList(),
+      ],
+    );
+  }
+
+  Widget _buildAddressForms() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Dados de Faturamento', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
+        CustomTextField(
+          controller: _billingStreetCtrl,
+          label: 'Endereço Completo (Cobrança)',
+          icon: Icons.location_on,
+          validator: (value) => value == null || value.isEmpty ? 'Campo obrigatório' : null,
+        ),
+        CustomTextField(
+          controller: _billingCepCtrl,
+          label: 'CEP de Cobrança (Apenas números)',
+          icon: Icons.markunread_mailbox,
+          keyboardType: TextInputType.number,
+          validator: (value) {
+            if (value == null || value.isEmpty) return 'Campo obrigatório';
+            if (value.length < 8) return 'CEP inválido';
+            return null;
+          },
+        ),
+        
+        CheckboxListTile(
+          title: const Text('Entregar no mesmo endereço de cobrança'),
+          contentPadding: EdgeInsets.zero,
+          value: _sameAddress,
+          onChanged: (bool? value) {
+            setState(() {
+              _sameAddress = value ?? false;
+              if (_sameAddress) {
+                // Sincroniza os textos se marcado
+                _shippingStreetCtrl.text = _billingStreetCtrl.text;
+                _shippingCepCtrl.text = _billingCepCtrl.text;
+              } else {
+                _shippingStreetCtrl.clear();
+                _shippingCepCtrl.clear();
+              }
+            });
+          },
+        ),
+
+        if (!_sameAddress) ...[
+          const Divider(),
+          const SizedBox(height: 8),
+          const Text('Dados de Entrega', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 12),
+          CustomTextField(
+            controller: _shippingStreetCtrl,
+            label: 'Endereço Completo (Entrega)',
+            icon: Icons.local_shipping,
+            validator: (value) => value == null || value.isEmpty ? 'Campo obrigatório' : null,
+          ),
+          CustomTextField(
+            controller: _shippingCepCtrl,
+            label: 'CEP de Entrega',
+            icon: Icons.map,
+            keyboardType: TextInputType.number,
+            validator: (value) {
+              if (value == null || value.isEmpty) return 'Campo obrigatório';
+              if (value.length < 8) return 'CEP inválido';
+              return null;
+            },
+          ),
+        ]
+      ],
+    );
+  }
+
+  Widget _buildOrderSummary() {
+    final subtotal = StoreController.instance.cartSubtotal;
+    final shipping = StoreController.instance.shippingCost;
+    final taxes = StoreController.instance.taxesAmount;
+    final total = StoreController.instance.grandTotal;
+
+    return Card(
+      color: Theme.of(context).colorScheme.surface,
+      elevation: 2,
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Resumo do Pedido', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Divider(),
+            _buildSummaryRow('Subtotal dos Itens:', subtotal),
+            _buildSummaryRow(
+              'Frete (Transportadora):', 
+              shipping, 
+              isFree: shipping == 0,
+            ),
+            if (shipping == 0)
+              const Padding(
+                padding: EdgeInsets.only(bottom: 8.0),
+                child: Text('*Você ganhou frete grátis (Compras acima de R\$ 150)!', style: TextStyle(color: Colors.green, fontSize: 12)),
+              ),
+            _buildSummaryRow('Taxas e Impostos (8%):', taxes),
+            const Divider(thickness: 2),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('TOTAL GERAL:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900)),
+                Text(
+                  'R\$ ${total.toStringAsFixed(2)}',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryRow(String label, double value, {bool isFree = false}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 15)),
+          Text(
+            isFree ? 'GRÁTIS' : 'R\$ ${value.toStringAsFixed(2)}',
+            style: TextStyle(
+              fontSize: 15,
+              fontWeight: isFree ? FontWeight.bold : FontWeight.normal,
+              color: isFree ? Colors.green : Colors.black87,
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class AddressSection extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final List<TextEditingController> controllers;
-  final List<String> labels;
+/// ============================================================================
+/// DESAFIO 4: TELA DE CONFIRMAÇÃO DE PEDIDO
+/// ============================================================================
+class OrderConfirmationPage extends StatelessWidget {
+  final String orderId;
+  final String billingStreet;
+  final String billingCep;
+  final String shippingStreet;
+  final String shippingCep;
+  final double totalValue;
 
-  const AddressSection({
-    required this.title,
-    required this.icon,
-    required this.controllers,
-    required this.labels,
+  const OrderConfirmationPage({
     super.key,
+    required this.orderId,
+    required this.billingStreet,
+    required this.billingCep,
+    required this.shippingStreet,
+    required this.shippingCep,
+    required this.totalValue,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(
-              children: <Widget>[
-                Icon(icon, color: AppColors.primary),
-                const SizedBox(width: 8),
-                Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              ],
-            ),
-            const SizedBox(height: 12),
-            for (int i = 0; i < controllers.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: TextFormField(
-                  controller: controllers[i],
-                  decoration: InputDecoration(
-                    labelText: labels[i],
-                    border: const OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  validator: (String? value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Campo obrigatório';
-                    }
-                    return null;
-                  },
-                ),
-              ),
-          ],
-        ),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Missão Concluída! 🏆'),
+        automaticallyImplyLeading: false, // Força a navegação apenas pelo botão principal
       ),
-    );
-  }
-}
-
-class CheckoutOrderSummary extends StatelessWidget {
-  final StoreController controller;
-
-  const CheckoutOrderSummary({required this.controller, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(24.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            const Text('Resumo do pedido', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-            const SizedBox(height: 10),
-            for (final Product product in controller.cartProducts)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: <Widget>[
-                    ProductIcon(product: product, size: 40),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text('${product.name}\nQtd: ${controller.quantityOf(product.id)}')),
-                    Text(formatMoney(product.price * controller.quantityOf(product.id))),
+          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Icon(Icons.verified, size: 120, color: Colors.amber),
+            const SizedBox(height: 24),
+            const Text(
+              'Transação Registrada na Base de Dados!',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'O loot já está sendo preparado para o envio. Em breve você receberá o código de rastreamento de teletransporte.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 16, color: Colors.grey),
+            ),
+            const SizedBox(height: 32),
+            Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Comprovante Digital', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const Divider(),
+                    _buildReceiptRow('Código de Rastreio:', orderId, isBold: true),
+                    const SizedBox(height: 12),
+                    
+                    const Text('Endereço de Cobrança:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                    Text('$billingStreet\nCEP: $billingCep', style: const TextStyle(height: 1.4)),
+                    const SizedBox(height: 12),
+                    
+                    const Text('Endereço de Entrega:', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+                    Text('$shippingStreet\nCEP: $shippingCep', style: const TextStyle(height: 1.4)),
+                    const Divider(),
+                    
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('Valor Descontado:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                        Text(
+                          'R\$ ${totalValue.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 20,
+                            color: Theme.of(context).colorScheme.primary,
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
-            const Divider(),
-            SummaryRow(label: 'Subtotal', value: formatMoney(controller.subtotal)),
-            SummaryRow(label: 'Frete', value: formatMoney(controller.shipping)),
-            SummaryRow(label: 'Impostos (10%)', value: formatMoney(controller.taxes)),
-            SummaryRow(label: 'Total', value: formatMoney(controller.total), highlight: true),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class ConfirmationCard extends StatelessWidget {
-  final String number;
-
-  const ConfirmationCard({required this.number, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      color: const Color(0xFFEAF7EF),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: AppColors.success),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: <Widget>[
-            const CircleAvatar(
-              backgroundColor: AppColors.success,
-              child: Icon(Icons.check, color: Colors.white),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Pedido confirmado: $number\nEnviamos os detalhes para o e-mail cadastrado.',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
+            const SizedBox(height: 48),
+            PrimaryButton(
+              label: 'Voltar ao Menu Principal',
+              icon: Icons.home,
+              onPressed: () {
+                // Limpa a pilha de telas e volta para a LandingPage (a primeira tela)
+                Navigator.popUntil(context, (route) => route.isFirst);
+              },
             ),
           ],
         ),
       ),
     );
   }
-}
 
-class PageHeader extends StatelessWidget {
-  final String title;
-  final String subtitle;
-
-  const PageHeader({required this.title, required this.subtitle, super.key});
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildReceiptRow(String label, String value, {bool isBold = false}) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: AppColors.primaryDark,
-                  fontWeight: FontWeight.bold,
-                ),
-          ),
-          const SizedBox(height: 4),
-          Text(subtitle),
-        ],
-      ),
-    );
-  }
-}
-
-class DidacticNote extends StatelessWidget {
-  final String title;
-  final String text;
-
-  const DidacticNote({required this.title, required this.text, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFFEAF4FF),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFB7D4FF)),
-      ),
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          const Icon(Icons.school, color: AppColors.primary),
-          const SizedBox(width: 10),
+        children: [
+          Expanded(flex: 2, child: Text(label, style: const TextStyle(color: Colors.grey))),
           Expanded(
-            child: Text.rich(
-              TextSpan(
-                children: <InlineSpan>[
-                  TextSpan(text: '$title\n', style: const TextStyle(fontWeight: FontWeight.bold)),
-                  TextSpan(text: text),
-                ],
-              ),
+            flex: 3,
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: TextStyle(fontWeight: isBold ? FontWeight.bold : FontWeight.normal),
             ),
           ),
         ],
       ),
     );
   }
-}
-
-class ProductIcon extends StatelessWidget {
-  final Product product;
-  final double size;
-
-  const ProductIcon({required this.product, required this.size, super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        color: const Color(0xFFEAF4FF),
-        borderRadius: BorderRadius.circular(size * 0.22),
-      ),
-      child: Icon(productIcon(product.icon), size: size * 0.55, color: AppColors.primaryDark),
-    );
-  }
-}
-
-IconData productIcon(String icon) {
-  switch (icon) {
-    case 'headphones':
-      return Icons.headphones;
-    case 'watch':
-      return Icons.watch;
-    case 'speaker':
-      return Icons.speaker;
-    case 'mouse':
-      return Icons.mouse;
-    case 'keyboard':
-      return Icons.keyboard;
-    default:
-      return Icons.devices_other;
-  }
-}
-
-String formatMoney(double value) {
-  return 'R\$ ${value.toStringAsFixed(2).replaceAll('.', ',')}';
 }

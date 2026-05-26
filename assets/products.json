@@ -1,47 +1,38 @@
 [
   {
-    "id": "1001",
-    "name": "Fone de Ouvido Bluetooth",
-    "price": 199.9,
-    "stock": 28,
-    "icon": "headphones",
-    "shortDescription": "Som de alta qualidade com conexão estável.",
-    "longDescription": "Fone sem fio com almofadas confortáveis, bateria de longa duração e conexão Bluetooth estável. Ideal para estudar, assistir aulas on-line e ouvir músicas com boa qualidade sonora."
+    "id": "GEEK-001",
+    "name": "Teclado Mecânico RGB TKL",
+    "price": 199.90,
+    "stock": 10,
+    "thumbnail": "https://images.unsplash.com/photo-1595225476474-87563907a212?w=500",
+    "shortDescription": "Switches azuis e iluminação personalizável.",
+    "longDescription": "Teclado mecânico compacto (Tenkeyless) ideal para setups minimalistas e jogos competitivos. Possui feedback tátil e sonoro preciso."
   },
   {
-    "id": "1002",
-    "name": "Smartwatch Fit X",
-    "price": 299.9,
-    "stock": 15,
-    "icon": "watch",
-    "shortDescription": "Monitoramento de saúde e notificações no pulso.",
-    "longDescription": "Relógio inteligente com monitoramento de batimentos, atividades físicas, notificações de aplicativos e bateria de longa duração. Excelente para estudantes acompanharem rotina, estudos e atividades diárias."
+    "id": "GEEK-002",
+    "name": "Action Figure Cyber Ninja",
+    "price": 125.00,
+    "stock": 4,
+    "thumbnail": "https://images.unsplash.com/photo-1608889825103-eb5ed706fc64?w=500",
+    "shortDescription": "Figura colecionável rica em detalhes.",
+    "longDescription": "Action figure articulada de 15cm com pintura automotiva e acessórios intercambiáveis. Item de colecionador."
   },
   {
-    "id": "1003",
-    "name": "Caixa de Som Inteligente",
-    "price": 149.9,
-    "stock": 32,
-    "icon": "speaker",
-    "shortDescription": "Potência e graves para qualquer ocasião.",
-    "longDescription": "Caixa de som compacta com áudio potente, visual moderno e conexão sem fio. Pode ser usada em apresentações escolares, atividades em grupo e momentos de lazer."
+    "id": "GEEK-003",
+    "name": "Headset Gamer Surround 7.1",
+    "price": 249.90,
+    "stock": 7,
+    "thumbnail": "https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?w=500",
+    "shortDescription": "Imersão sonora total com microfone com cancelamento de ruído.",
+    "longDescription": "Ouça os passos dos seus inimigos com clareza cristalina. Almofadas em memory foam para horas de jogatina sem desconforto."
   },
   {
-    "id": "1004",
-    "name": "Mouse Gamer RGB",
-    "price": 129.9,
-    "stock": 40,
-    "icon": "mouse",
-    "shortDescription": "Alta precisão e iluminação RGB.",
-    "longDescription": "Mouse com sensor preciso, botões laterais e iluminação RGB. Indicado para projetos de programação, jogos educativos e uso em laboratórios de informática."
-  },
-  {
-    "id": "1005",
-    "name": "Teclado Mecânico Compacto",
-    "price": 239.9,
-    "stock": 18,
-    "icon": "keyboard",
-    "shortDescription": "Digitação confortável para programação.",
-    "longDescription": "Teclado compacto com teclas mecânicas, resposta rápida e ótima ergonomia. Ajuda o estudante a praticar programação com mais conforto e produtividade."
+    "id": "GEEK-004",
+    "name": "Caneca Controle de Videogame",
+    "price": 45.90,
+    "stock": 20,
+    "thumbnail": "https://lojametallica.vteximg.com.br/arquivos/ids/180859-1000-1000/Start-Game-Preto.jpg?v=638483708415800000",
+    "shortDescription": "Inicie o dia com mais XP.",
+    "longDescription": "Caneca de cerâmica de 350ml com alça no formato de controle de videogame clássico. Perfeita para café durante as partidas."
   }
 ]
